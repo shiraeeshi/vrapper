@@ -3,12 +3,12 @@ package net.sourceforge.vrapper.eclipse.platform;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Scanner;
-import java.util.Stack;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -93,6 +93,10 @@ class NumberValue implements Value {
 	public int getValue() {
 		return value;
 	}
+	
+	public String toString() {
+		return String.valueOf(value);
+	}
 }
 class FloatValue implements Value {
 	private double value;
@@ -102,6 +106,9 @@ class FloatValue implements Value {
 		this.value = value;
 	}
 	
+	public String toString() {
+		return String.valueOf(value);
+	}
 }
 class StringValue implements Value {
 	private String value;
@@ -110,6 +117,9 @@ class StringValue implements Value {
 	}
 	public String getValue() {
 		return value;
+	}
+	public String toString() {
+		return "\"" + value + "\"";
 	}
 }
 class Funcref implements Value, Expr {
@@ -131,6 +141,19 @@ class ListValue implements Value {
 	public ListValue(Value ... items) {
 		this.items = new ArrayList<Value>(Arrays.asList(items));
 	}
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("[");
+		Iterator<Value> itemsIt = items.iterator();
+		while (itemsIt.hasNext()) {
+			sb.append(itemsIt.next());
+			if (itemsIt.hasNext()) {
+				sb.append(",");
+			}
+		}
+		sb.append("]");
+		return sb.toString();
+	}
 }
 class DictionaryValue implements Value {
 	private Map<String, Value> map = new HashMap<String, Value>();
@@ -138,6 +161,22 @@ class DictionaryValue implements Value {
 		for (DictEntry entry : entries) {
 			map.put(entry.getKeyAsString(), entry.getValue());
 		}
+	}
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("{");
+		Iterator<Map.Entry<String,Value>> it = map.entrySet().iterator();
+		while (it.hasNext()) {
+			Map.Entry<String, Value> entry = it.next();
+			sb.append(entry.getKey());
+			sb.append(":");
+			sb.append(entry.getValue());
+			if (it.hasNext()) {
+				sb.append(",");
+			}
+		}
+		sb.append("}");
+		return sb.toString();
 	}
 }
 class DictEntry implements Value {
@@ -181,9 +220,9 @@ abstract class Func implements Expr {
 
 class Pars {
 	static enum Operations {Funcref, List, Dictionary, DictEntry, Plus, Equals, Point}
-	static Stack<Operations> operations = new Stack<Operations>();
+	static LinkedList<Operations> operations = new LinkedList<Operations>();
 	static LinkedList<Value> operands = new LinkedList<Value>();
-	static Stack<Integer> operandsCount = new Stack<Integer>();
+	static LinkedList<Integer> operandsCount = new LinkedList<Integer>();
 	
 	public static void parse(String input) {
 		while ( ! input.isEmpty()) {
@@ -193,34 +232,34 @@ class Pars {
 	
 	private static String parseIter(String input) {
 		if (input.startsWith("[")) {
-			operations.push(Operations.List);
+			operations.addFirst(Operations.List);
 			pushNewOperandsCount();
 			return input.substring(1);
 		}
 		if (input.startsWith("{")) {
-			operations.push(Operations.Dictionary);
+			operations.addFirst(Operations.Dictionary);
 			pushNewOperandsCount();
 			return input.substring(1);
 		}
 		if (input.startsWith(":")) {
-			operations.push(Operations.DictEntry);
+			operations.addFirst(Operations.DictEntry);
 			decrementLastAndPushNew();
 			return input.substring(1);
 		}
 		if (input.startsWith(",")) {
-			if (operations.peek() == Operations.DictEntry) {
+			if (operations.peekFirst() == Operations.DictEntry) {
 				handleDictEntry();
 			}
 			return input.substring(1);
 		}
 		if (input.startsWith("}")) {
-			if (operations.peek() == Operations.DictEntry) {
+			if (operations.peekFirst() == Operations.DictEntry) {
 				handleDictEntry();
 			}
-			if (operations.pop() != Operations.Dictionary) {
+			if (operations.pollFirst() != Operations.Dictionary) {
 				throw new IllegalStateException("closing \"}\" has not pair.");
 			}
-			int lastOperandsCount = operandsCount.pop();
+			int lastOperandsCount = operandsCount.pollFirst();
 			DictEntry[] entries = new DictEntry[lastOperandsCount];
 			for (int i=0; i<lastOperandsCount; i++) {
 				entries[i] = (DictEntry) operands.removeFirst();
@@ -231,12 +270,12 @@ class Pars {
 			return input.substring(1);
 		}
 		if (input.startsWith("]")) {
-			if (operations.pop() != Operations.List) {
+			if (operations.pollFirst() != Operations.List) {
 				throw new IllegalStateException("closing \"]\" has not pair.");
 			}
-			int lastOperandsCount = operandsCount.pop();
+			int lastOperandsCount = operandsCount.pollFirst();
 			Value[] items = new Value[lastOperandsCount];
-			for (int i=0; i<lastOperandsCount; i++) {
+			for (int i=lastOperandsCount-1; i>=0; i--) {
 				items[i] = operands.removeFirst();
 			}
 			ListValue value = new ListValue(items);
@@ -290,7 +329,7 @@ class Pars {
 		throw new IllegalAccessError("bad input. \"" + input +"\" didn't match anything");
 	}
 	private static void handleDictEntry() {
-		int lastOperandsCount = operandsCount.pop();
+		int lastOperandsCount = operandsCount.pollFirst();
 		if (lastOperandsCount != 2) {
 			throw new IllegalStateException("dictionary entry takes two operands, but found " + lastOperandsCount);
 		}
@@ -298,22 +337,20 @@ class Pars {
 		Value key = operands.removeFirst();
 		operands.addFirst(new DictEntry(key, value));
 		incrementLastOperandsCount();
-		operations.pop();
+		operations.pollFirst();
 	}
 	private static void pushNewOperandsCount() {
-		operandsCount.push(0);
+		operandsCount.addFirst(0);
 	}
 	private static void incrementLastOperandsCount() {
 		if (operandsCount.isEmpty()) {
-			operandsCount.push(1);
+			operandsCount.addFirst(1);
 		} else {
-			int value = operandsCount.pop();
-			operandsCount.push(value + 1);
+			operandsCount.set(0, operandsCount.peekFirst() + 1);
 		}
 	}
 	private static void decrementLastAndPushNew() {
-		int value = operandsCount.pop();
-		operandsCount.push(value - 1);
-		operandsCount.push(1);
+		operandsCount.set(0, operandsCount.peekFirst() - 1);
+		operandsCount.addFirst(1);
 	}
 }
