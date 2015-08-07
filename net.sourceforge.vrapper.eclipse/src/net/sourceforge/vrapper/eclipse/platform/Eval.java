@@ -26,11 +26,11 @@ public class Eval {
 			}
 			
 			Pars.parse(line);
-			Queue<Value> operands = Pars.operands;
+			Queue<Expr> operands = Pars.operands;
 			int s = operands.size();
 			System.out.println(s);
-			for (Value v : operands) {
-				System.out.println(v);
+			for (Expr v : operands) {
+				System.out.println(v.eval());
 			}
 			
 			if (line.startsWith(":let")) {
@@ -81,9 +81,7 @@ class Memory {
 	}
 }
 
-interface Value {
-	
-}
+interface Value {}
 
 class NumberValue implements Value {
 	private int value;
@@ -96,6 +94,28 @@ class NumberValue implements Value {
 	
 	public String toString() {
 		return String.valueOf(value);
+	}
+	public static NumberValue fromString(StringValue stringValue) {
+		String str = stringValue.getValue();
+		Pattern hexPattern = Pattern.compile("^(-?)0x([0-9a-fA-F]+)(.*)"); // TODO code duplication
+		Matcher hexMatcher = hexPattern.matcher(str);
+		Pattern octPattern = Pattern.compile("^(-?)0([0-7]+)(.*)");
+		Matcher octMatcher = octPattern.matcher(str);
+		Pattern decPattern = Pattern.compile("^-?(\\d+)(.*)");
+		Matcher decMatcher = decPattern.matcher(str);
+		if (hexMatcher.matches()) {
+			int num = Integer.parseInt(hexMatcher.group(1) + hexMatcher.group(2), 16);
+			return new NumberValue(num);
+		}
+		if (octMatcher.matches()) {
+			int num = Integer.parseInt(octMatcher.group(1) + octMatcher.group(2), 8);
+			return new NumberValue(num);
+		}
+		if (decMatcher.matches()) {
+			int num = Integer.parseInt(decMatcher.group(1));
+			return new NumberValue(num);
+		}
+		return new NumberValue(0);
 	}
 }
 class FloatValue implements Value {
@@ -132,8 +152,8 @@ class Funcref implements Value, Expr {
 	public String getFuncName() {
 		return funcName;
 	}
-	public Value eval(Value ... operands) {
-		return func.eval(operands);
+	public Value eval() {
+		return func.eval();
 	}
 }
 class ListValue implements Value {
@@ -204,11 +224,130 @@ class DictEntry implements Value {
 	}
 }
 
-interface Expr {
-	Value eval(Value ... operands);
+class LogicalValue implements Expr, NonTernaryExpr {
+	private static enum LogicalOp {OR,AND}
+	public static LogicalOp OR = LogicalOp.OR;
+	public static LogicalOp AND = LogicalOp.AND;
+	private LinkedList<Expr> operands = new LinkedList<Expr>();
+
+	private class ANDOperandsChain implements Expr {
+		private LinkedList<Expr> andOperands = new LinkedList<Expr>();
+		public ANDOperandsChain(Expr leftmost, Expr second) {
+			andOperands.addLast(leftmost);
+			andOperands.addLast(second);
+		}
+		public void addOperand(Expr operand) {
+			andOperands.addLast(operand);
+		}
+		public Value eval() {
+			if (andOperands.isEmpty()) {
+				throw new IllegalStateException("cannot evaluate empty andOperandsChain.");
+			}
+			while ( ! andOperands.isEmpty()) {
+				if ( ! evaluatesToNonZero(andOperands.pollFirst().eval())) {
+					return FALSE();
+				}
+			}
+			return TRUE();
+		}
+	}
+	
+	public LogicalValue(Expr leftmostOperand) {
+		operands.addLast(leftmostOperand);
+	}
+
+	public void appendOperation(LogicalOp op, Expr operand) {
+		if (op == OR) {
+			operands.addLast(operand);
+		} else {
+			if (operands.peekLast() instanceof ANDOperandsChain) {
+				((ANDOperandsChain)operands.peekLast()).addOperand(operand);
+			} else {
+				operands.addLast(new ANDOperandsChain(operands.pollLast(), operand));
+			}
+		}
+	}
+	
+	public Value eval() {
+		if (operands.isEmpty()) throw new IllegalStateException("cannot evaluate empty (no operands) LogicalValue.");
+		while ( ! operands.isEmpty()) {
+			if (evaluatesToNonZero(operands.pollFirst().eval())) {
+				return TRUE();
+			}
+		}
+		return FALSE();
+	}
+	
+	
+	private NumberValue FALSE() {
+		return new NumberValue(0);
+	}
+
+	private NumberValue TRUE() {
+		return new NumberValue(1); // any non-zero number
+	}
+
+	public static boolean evaluatesToNonZero(Value expr) {
+		if (expr instanceof FloatValue) {
+			throw new IllegalArgumentException("Using Float as a Number");
+		}
+		if (expr instanceof StringValue) {
+			NumberValue converted = NumberValue.fromString((StringValue)expr);
+			return converted.getValue() != 0;
+		}
+		if (expr instanceof NumberValue) {
+			return ((NumberValue)expr).getValue() != 0;
+		}
+		throw new IllegalArgumentException("Illegal value");
+	}
+	
 }
 
-abstract class Func implements Expr {
+class TernaryValue implements Expr {
+	private NonTernaryExpr first;
+	private Expr second;
+	private Expr third;
+
+	public TernaryValue(NonTernaryExpr first, Expr second, Expr third) {
+		this.first = first;
+		this.second = second;
+		this.third = third;
+	}
+	@Override
+	public Value eval() {
+		return LogicalValue.evaluatesToNonZero(first.eval()) ?
+				second.eval() : third.eval();
+	}
+
+	public void changeThird(Expr second2, Expr third2) {
+		if (this.third instanceof TernaryValue) {
+			((TernaryValue) this.third).changeThird(second2, third2);
+		} else {
+			this.third = new TernaryValue((NonTernaryExpr) this.third, second2, third2);
+		}
+	}
+	
+}
+
+class ValueWrapperExpr implements Expr, NonTernaryExpr {
+	private Value value;
+
+	public ValueWrapperExpr(Value value) {
+		this.value = value;
+	}
+
+	public Value eval() {
+		return value;
+	}
+}
+
+interface Expr {
+	Value eval();
+}
+
+interface NonTernaryExpr extends Expr {}
+
+abstract class Func {
 	public abstract Value eval(Value ... operands);
 }
 
@@ -219,40 +358,80 @@ abstract class Func implements Expr {
 }*/
 
 class Pars {
-	static enum Operations {Funcref, List, Dictionary, DictEntry, Plus, Equals, Point}
+	static enum Operations {Funcref, List, Dictionary, DictEntry, Plus, Equals, Point,
+		TernaryQuestionMark, TernaryColon,
+		LogicalOR, LogicalAND}
 	static LinkedList<Operations> operations = new LinkedList<Operations>();
-	static LinkedList<Value> operands = new LinkedList<Value>();
+	static LinkedList<Expr> operands = new LinkedList<Expr>();
 	static LinkedList<Integer> operandsCount = new LinkedList<Integer>();
 	
 	public static void parse(String input) {
+		operations = new LinkedList<Operations>();
+		operands = new LinkedList<Expr>();
+		operandsCount = new LinkedList<Integer>();
 		while ( ! input.isEmpty()) {
 			input = parseIter(input);
 		}
 	}
 	
+	private static Pattern mainPattern = Pattern.compile("\\s*"
+				+ "("
+				+ "(\\[)" // group 2 left square bracket
+				+ "|(\\{)" // group 3 left curly bracket
+				+ "|(:)" // group 4 colon
+				+ "|([,])" // group 5 comma
+				+ "|(\\})" // group 6 right curly bracket
+				+ "|(\\])" // group 7 right square bracket
+				+ "|(-?\\d+\\.\\d+(e-?\\d+)?)" // group 8,9 float
+				+ "|((-?)0x([0-9a-fA-F]+))"// group 10,11,12 hex
+				+ "|((-?)0([0-7]+))"// group 13,14,15 octal
+				+ "|(-?(\\d+))"// group 16,17 decimal
+				+ "|(\"([^\"]*)\"|'([^']*)')"// group 18,19,20 string
+				+ "|(\\&\\&|\\|\\|)"// group 21 logical
+				+ "|(\\?)"// group 22 question mark
+				+ ")"
+				+ "\\s*(.*)");
+
 	private static String parseIter(String input) {
-		if (input.startsWith("[")) {
+		Matcher mainMatcher = mainPattern.matcher(input);
+		if ( ! mainMatcher.matches()) {
+			throw new IllegalStateException("main matcher doesn't match");
+		}
+		boolean isLeftSquareBracket = mainMatcher.group(2) != null;
+		if (isLeftSquareBracket) {
 			operations.addFirst(Operations.List);
 			pushNewOperandsCount();
-			return input.substring(1);
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
-		if (input.startsWith("{")) {
+		boolean isLeftCurlyBracket = mainMatcher.group(3) != null;
+		if (isLeftCurlyBracket) {
 			operations.addFirst(Operations.Dictionary);
 			pushNewOperandsCount();
-			return input.substring(1);
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
-		if (input.startsWith(":")) {
-			operations.addFirst(Operations.DictEntry);
-			decrementLastAndPushNew();
-			return input.substring(1);
+		boolean isColon = mainMatcher.group(4) != null;
+		if (isColon) {
+			if (operations.peekFirst() == Operations.TernaryQuestionMark) {
+				operations.addFirst(Operations.TernaryColon);
+			}
+			else if (operations.peekFirst() == Operations.Dictionary) {
+				operations.addFirst(Operations.DictEntry);
+				decrementLastAndPushNew();
+			}
+			else {
+				throw new IllegalArgumentException("illegal colon position");
+			}
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
-		if (input.startsWith(",")) {
+		boolean isComma = mainMatcher.group(5) != null;
+		if (isComma) {
 			if (operations.peekFirst() == Operations.DictEntry) {
 				handleDictEntry();
 			}
-			return input.substring(1);
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
-		if (input.startsWith("}")) {
+		boolean isRightCurlyBracket = mainMatcher.group(6) != null;
+		if (isRightCurlyBracket) {
 			if (operations.peekFirst() == Operations.DictEntry) {
 				handleDictEntry();
 			}
@@ -262,80 +441,154 @@ class Pars {
 			int lastOperandsCount = operandsCount.pollFirst();
 			DictEntry[] entries = new DictEntry[lastOperandsCount];
 			for (int i=0; i<lastOperandsCount; i++) {
-				entries[i] = (DictEntry) operands.removeFirst();
+				entries[i] = (DictEntry) operands.removeFirst().eval();
 			}
 			DictionaryValue value = new DictionaryValue(entries);
-			operands.addFirst(value);
-			incrementLastOperandsCount();
-			return input.substring(1);
+			addNewOperand(value);
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
-		if (input.startsWith("]")) {
+		boolean isRightSquareBracket = mainMatcher.group(7) != null;
+		if (isRightSquareBracket) {
 			if (operations.pollFirst() != Operations.List) {
 				throw new IllegalStateException("closing \"]\" has not pair.");
 			}
 			int lastOperandsCount = operandsCount.pollFirst();
 			Value[] items = new Value[lastOperandsCount];
 			for (int i=lastOperandsCount-1; i>=0; i--) {
-				items[i] = operands.removeFirst();
+				items[i] = operands.removeFirst().eval();
 			}
 			ListValue value = new ListValue(items);
-			operands.addFirst(value);
-			incrementLastOperandsCount();
-			return input.substring(1);
+			addNewOperand(value);
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
 
-		Pattern floatPattern = Pattern.compile("(-?\\d+\\.\\d+(e-?\\d+)?)(.*)");
-		Matcher floatMatcher = floatPattern.matcher(input);
-		if (floatMatcher.matches()) {
-			double value = Double.parseDouble(floatMatcher.group(1));
-			operands.addFirst(new FloatValue(value));
-			incrementLastOperandsCount();
-			return floatMatcher.group(floatMatcher.groupCount());
+		boolean isFloat = mainMatcher.group(8) != null;
+		if (isFloat) {
+			double value = Double.parseDouble(mainMatcher.group(8));
+			addNewOperand(new FloatValue(value));
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
 
-		Pattern hexPattern = Pattern.compile("^(-?)0x([0-9a-fA-F]+)(.*)");
-		Matcher hexMatcher = hexPattern.matcher(input);
-		Pattern octPattern = Pattern.compile("^(-?)0([0-7]+)(.*)");
-		Matcher octMatcher = octPattern.matcher(input);
-		Pattern decPattern = Pattern.compile("^-?(\\d+)(.*)");
-		Matcher decMatcher = decPattern.matcher(input);
-		if (hexMatcher.matches()) {
-			int num = Integer.parseInt(hexMatcher.group(1) + hexMatcher.group(2), 16);
-			operands.addFirst(new NumberValue(num));
-			incrementLastOperandsCount();
-			return hexMatcher.group(hexMatcher.groupCount());
-		} else if (octMatcher.matches()) {
-			int num = Integer.parseInt(octMatcher.group(1) + octMatcher.group(2), 8);
-			operands.addFirst(new NumberValue(num));
-			incrementLastOperandsCount();
-			return octMatcher.group(octMatcher.groupCount());
-		} else if (decMatcher.matches()) {
-			int num = Integer.parseInt(decMatcher.group(1));
-			operands.addFirst(new NumberValue(num));
-			incrementLastOperandsCount();
-			return decMatcher.group(decMatcher.groupCount());
+		boolean isHexadecimal = mainMatcher.group(10) != null;
+		boolean isOctal = mainMatcher.group(13) != null;
+		boolean isDecimal = mainMatcher.group(16) != null;
+		if (isHexadecimal) {
+			int num = Integer.parseInt(mainMatcher.group(11) + mainMatcher.group(12), 16);
+			addNewOperand(new NumberValue(num));
+			return mainMatcher.group(mainMatcher.groupCount());
+		} else if (isOctal) {
+			int num = Integer.parseInt(mainMatcher.group(14) + mainMatcher.group(15), 8);
+			addNewOperand(new NumberValue(num));
+			return mainMatcher.group(mainMatcher.groupCount());
+		} else if (isDecimal) {
+			int num = Integer.parseInt(mainMatcher.group(16));
+			addNewOperand(new NumberValue(num));
+			return mainMatcher.group(mainMatcher.groupCount());
 		}
 		
-		Pattern stringPattern = Pattern.compile("(\"([^\"]*)\"|'([^']*)')(.*)");
-		Matcher stringMatcher = stringPattern.matcher(input);
-		if (stringMatcher.matches()) {
-			String value = stringMatcher.group(1);
+		boolean isString = mainMatcher.group(18) != null;
+		if (isString) {
+			String value = mainMatcher.group(18);
 			value = value.substring(1, value.length()-1);
-			operands.addFirst(new StringValue(value));
-			incrementLastOperandsCount();
-			return stringMatcher.group(stringMatcher.groupCount());
-		}	
+			addNewOperand(new StringValue(value));
+			return mainMatcher.group(mainMatcher.groupCount());
+		}
+		
+		// afterstringpattern:
+		boolean isLogical = mainMatcher.group(21) != null;
+		if (isLogical) {
+			String opString = mainMatcher.group(21);
+			if ("&&".equals(opString)) {
+				operations.addFirst(Operations.LogicalAND);
+			}
+			else if ("||".equals(opString)) {
+				operations.addFirst(Operations.LogicalOR);
+			}
+			else {
+				throw new IllegalStateException("illegal logical ( '||' | '&&' ) operation " + opString);
+			}
+			if ( ! (operands.peekFirst() instanceof LogicalValue)) {
+				Expr leftmostOperand = operands.pollFirst();
+				operands.addFirst(new LogicalValue(leftmostOperand));
+				int lastOperandsCount = operandsCount.pollFirst();
+				if (lastOperandsCount != 1) {
+					throw new IllegalStateException(
+							"logical expression expects single operand when initialized, but found " + lastOperandsCount);
+				}
+				incrementLastOperandsCount();
+			}
+			return mainMatcher.group(mainMatcher.groupCount());
+		}
+		
+		boolean isQuestionMark = mainMatcher.group(22) != null;
+		if (isQuestionMark) {
+			if (operands.peekFirst() instanceof TernaryValue) {
+				pushNewOperandsCount();
+				incrementLastOperandsCount();
+			} else {
+				decrementLastAndPushNew();
+			}
+			operations.addFirst(Operations.TernaryQuestionMark);
+			return mainMatcher.group(mainMatcher.groupCount());
+		}
 
 		throw new IllegalAccessError("bad input. \"" + input +"\" didn't match anything");
+	}
+	private static void addNewOperand(Value operand) {
+		addNewOperand(new ValueWrapperExpr(operand));
+	}
+	private static void addNewOperand(Expr operand) {
+		if (operations.peekFirst() == Operations.LogicalOR ||
+				operations.peekFirst() == Operations.LogicalAND) {
+			if ( ! (operands.peekFirst() instanceof LogicalValue)) {
+				throw new IllegalStateException("logical operation without last LogicalValue-type operand");
+			}
+			LogicalValue logicalChain = (LogicalValue)operands.peekFirst();
+			if (operations.pollFirst() == Operations.LogicalOR) {
+				logicalChain.appendOperation(LogicalValue.OR, operand);
+			}
+			else if (operations.pollFirst() == Operations.LogicalAND) {
+				logicalChain.appendOperation(LogicalValue.AND, operand);
+			}
+			return;
+		}
+		operands.addFirst(operand);
+		incrementLastOperandsCount();
+
+		if (operations.peekFirst() == Operations.TernaryColon) {
+			handleTernary();
+		}
+	}
+
+	private static void handleTernary() {
+		operations.removeFirst(); // remove colon
+		operations.removeFirst(); // remove question mark
+		int lastOperandsCount = operandsCount.pollFirst();
+		if (lastOperandsCount != 3) {
+			throw new IllegalStateException("ternary expression takes 3 operands, but found " + lastOperandsCount);
+		}
+		Expr ternaryExpr;
+		Expr third = operands.removeFirst();
+		Expr second = operands.removeFirst();
+		Expr first = operands.removeFirst();
+		if (first instanceof TernaryValue) {
+			TernaryValue firstTernary = (TernaryValue) first;
+			firstTernary.changeThird(second, third);
+			operands.addFirst(firstTernary);
+			return;
+		}
+		ternaryExpr = new TernaryValue((NonTernaryExpr) first, second, third);
+		addNewOperand(ternaryExpr);
 	}
 	private static void handleDictEntry() {
 		int lastOperandsCount = operandsCount.pollFirst();
 		if (lastOperandsCount != 2) {
 			throw new IllegalStateException("dictionary entry takes two operands, but found " + lastOperandsCount);
 		}
-		Value value = operands.removeFirst();
-		Value key = operands.removeFirst();
-		operands.addFirst(new DictEntry(key, value));
+		Value value = operands.removeFirst().eval();
+		Value key = operands.removeFirst().eval();
+		DictEntry dictEntry = new DictEntry(key, value);
+		operands.addFirst(new ValueWrapperExpr(dictEntry));
 		incrementLastOperandsCount();
 		operations.pollFirst();
 	}
