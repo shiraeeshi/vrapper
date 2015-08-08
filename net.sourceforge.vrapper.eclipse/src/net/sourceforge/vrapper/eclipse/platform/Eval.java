@@ -230,7 +230,7 @@ class LogicalValue implements Expr, NonTernaryExpr {
 	public static LogicalOp AND = LogicalOp.AND;
 	private LinkedList<Expr> operands = new LinkedList<Expr>();
 
-	private class ANDOperandsChain implements Expr {
+	private static class ANDOperandsChain implements Expr {
 		private LinkedList<Expr> andOperands = new LinkedList<Expr>();
 		public ANDOperandsChain(Expr leftmost, Expr second) {
 			andOperands.addLast(leftmost);
@@ -279,11 +279,11 @@ class LogicalValue implements Expr, NonTernaryExpr {
 	}
 	
 	
-	private NumberValue FALSE() {
+	private static NumberValue FALSE() {
 		return new NumberValue(0);
 	}
 
-	private NumberValue TRUE() {
+	private static NumberValue TRUE() {
 		return new NumberValue(1); // any non-zero number
 	}
 
